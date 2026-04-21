@@ -1,5 +1,6 @@
 ---
 title: "Fish Biomass Report"
+subtitle: "Based on code originally developed for WCS Solomon Islands"
 author:
   - name: "Iain R. Caldwell"
 date: today
@@ -31,7 +32,7 @@ Set your project tag, biomass thresholds, and optional site grouping here. These
 
 #### PROJECT CONFIGURATION ####
 # Change this tag to match your MERMAID project(s)
-project_name <- "Madagascar NW 2020"
+project_name <- "SERF2_AlanFriedlander_Niue"
 
 #### BIOMASS THRESHOLDS ####
 # Stoplight thresholds for fish biomass (kg/ha)
@@ -82,10 +83,31 @@ library(ggplot2)
 library(ggpubr)
 
 #### Get data from MERMAID ####
+
 target_project <- mermaid_search_projects(name = project_name)
 
-fish_tbl <- target_project %>%
-  mermaid_get_project_data(method = "fishbelt", data = "sampleevents")
+mermaidr::mermaid_auth()
+
+fish_tbl <- mermaid_get_project_data(project = target_project$id,
+                                     method = "fishbelt",
+                                     data = "sampleevents")
+
+# Create a unique label for each sample event. If a site was surveyed
+# more than once, append the date so each event gets its own bar.
+# If there are still duplicates (same site + date but different depths),
+# also append the depth.
+fish_tbl <- fish_tbl %>%
+  add_count(site, name = "n_per_site") %>%
+  mutate(site_label = ifelse(
+    test = n_per_site > 1,
+    yes = paste0(site, " (", sample_date, ")"),
+    no = as.character(site))) %>%
+  add_count(site_label, name = "n_per_label") %>%
+  mutate(site_label = ifelse(
+    test = n_per_label > 1,
+    yes = paste0(site, " (", sample_date, ") [", depth_avg, "m]"),
+    no = site_label)) %>%
+  select(-n_per_site, -n_per_label)
 ```
 
 ------------------------------------------------------------------------
@@ -98,7 +120,7 @@ An interactive table showing the site, management rules, and average fish biomas
 #| label: Interactive data table
 
 datatable(fish_tbl %>%
-            select(site, management_rules, biomass_kgha_avg))
+            select(site_label, management_rules, biomass_kgha_avg))
 ```
 
 ------------------------------------------------------------------------
@@ -114,9 +136,6 @@ This is based on code used for the [MERMAID Explore](https://datamermaid.org/exp
 
 biomass <- fish_tbl$biomass_kgha_avg
 
-# Get the 1/3 and 2/3 quantiles to compare with thresholds
-quantile(x = biomass, probs = c(0.33, 0.66))
-
 # Truncate high biomass values so the histogram x-axis stays readable.
 # Any survey above the cutoff is placed into a single "cutoff+" bin.
 biomass_cutoff <- 5000
@@ -127,32 +146,49 @@ tick_vals <- seq(0, biomass_cutoff, by = 1000)
 tick_labels <- as.character(tick_vals)
 tick_labels[length(tick_labels)] <- paste0(biomass_cutoff, "+")
 
-fish_histogram <- plot_ly() %>%
-  # Below yellow threshold (red)
-  add_histogram(
-    x = biomass_truncated[biomass_truncated < yellow_threshold],
-    xbins = list(start = 0, size = 100),
-    marker = list(color = "#d13823"),
-    name = paste0("< ", yellow_threshold),
-    showlegend = FALSE
-  ) %>%
-  # Between thresholds (yellow)
-  add_histogram(
-    x = biomass_truncated[biomass_truncated >= yellow_threshold &
-                          biomass_truncated <= green_threshold],
-    xbins = list(start = 0, size = 100),
-    marker = list(color = "#f3a224"),
-    name = paste0(yellow_threshold, "–", green_threshold),
-    showlegend = FALSE
-  ) %>%
-  # Above green threshold (green)
-  add_histogram(
-    x = biomass_truncated[biomass_truncated > green_threshold],
-    xbins = list(start = 0, size = 100),
-    marker = list(color = "#277d1d"),
-    name = paste0("> ", green_threshold),
-    showlegend = FALSE
-  ) %>%
+# Split biomass into the three stoplight bins
+biomass_red <- biomass_truncated[biomass_truncated < yellow_threshold]
+biomass_yellow <- biomass_truncated[biomass_truncated >= yellow_threshold &
+                                    biomass_truncated <= green_threshold]
+biomass_green <- biomass_truncated[biomass_truncated > green_threshold]
+
+# Build the histogram, only adding traces for non-empty bins
+fish_histogram <- plot_ly()
+
+if (length(biomass_red) > 0) {
+  fish_histogram <- fish_histogram %>%
+    add_histogram(
+      x = biomass_red,
+      xbins = list(start = 0, size = 100),
+      marker = list(color = "#d13823"),
+      name = paste0("< ", yellow_threshold),
+      showlegend = FALSE
+    )
+}
+
+if (length(biomass_yellow) > 0) {
+  fish_histogram <- fish_histogram %>%
+    add_histogram(
+      x = biomass_yellow,
+      xbins = list(start = 0, size = 100),
+      marker = list(color = "#f3a224"),
+      name = paste0(yellow_threshold, "–", green_threshold),
+      showlegend = FALSE
+    )
+}
+
+if (length(biomass_green) > 0) {
+  fish_histogram <- fish_histogram %>%
+    add_histogram(
+      x = biomass_green,
+      xbins = list(start = 0, size = 100),
+      marker = list(color = "#277d1d"),
+      name = paste0("> ", green_threshold),
+      showlegend = FALSE
+    )
+}
+
+fish_histogram <- fish_histogram %>%
   config(
     displayModeBar = TRUE,
     modeBarButtonsToRemove = c(
@@ -183,6 +219,7 @@ fish_histogram <- plot_ly() %>%
       title = "Fish biomass (kg/ha)",
       linecolor = "black",
       linewidth = 2,
+      range = c(0, biomass_cutoff + 200),
       tickmode = "array",
       tickvals = tick_vals,
       ticktext = tick_labels
@@ -239,6 +276,7 @@ This is based on code originally created for a [Madagascar report card](https://
 if (use_site_grouping) {
   fish_tbl <- fish_tbl %>%
     mutate(community = gsub("\\s*\\d+$", "", site))
+  # Note: community is derived from original site name, not site_label
 
   # Apply group merges if specified
   if (!is.null(group_merges)) {
@@ -281,17 +319,17 @@ if (use_site_grouping) {
       mutate(community = "All sites")
     community_levels <- "All sites"
     site_levels <- fish_tbl %>%
+      distinct(site_label, .keep_all = TRUE) %>%
       arrange(desc(biomass_kgha_avg)) %>%
-      pull(site)
+      pull(site_label)
   } else {
     # Order sites within communities by biomass
     site_order <- fish_tbl %>%
-      group_by(community, site) %>%
-      summarise(site_biomass = biomass_kgha_avg, .groups = "drop") %>%
+      distinct(site_label, .keep_all = TRUE) %>%
       mutate(community = factor(community, levels = community_levels)) %>%
-      arrange(community, desc(site_biomass))
+      arrange(community, desc(biomass_kgha_avg))
 
-    site_levels <- site_order$site
+    site_levels <- site_order$site_label
   }
 
 } else {
@@ -301,13 +339,14 @@ if (use_site_grouping) {
 
   community_levels <- "All sites"
   site_levels <- fish_tbl %>%
+    distinct(site_label, .keep_all = TRUE) %>%
     arrange(desc(biomass_kgha_avg)) %>%
-    pull(site)
+    pull(site_label)
 }
 
 #### Reshape data to long format by trophic group ####
 fish_trophic_tbl <- fish_tbl %>%
-  select(community, site, latitude, longitude,
+  select(community, site_label, latitude, longitude,
          management_rules, biomass_kgha_avg,
          starts_with("biomass_kgha_trophic_group_avg_")) %>%
   pivot_longer(
@@ -319,7 +358,7 @@ fish_trophic_tbl <- fish_tbl %>%
   mutate(
     biomass = ifelse(is.na(biomass), 0, biomass),
     community = factor(community, levels = community_levels),
-    site = factor(site, levels = rev(site_levels)),
+    site_label = factor(site_label, levels = rev(site_levels)),
     trophic_group = case_when(
       trophic_group == "planktivore" ~ "Planktivore",
       trophic_group == "herbivore_macroalgae" ~ "Herbivore (macroalgae)",
@@ -373,7 +412,7 @@ axis_max <- ceiling((max_biomass + label_padding) / axis_break) * axis_break
 #### Create the plot ####
 trophic_biomass_plot <- ggplot(
   data = fish_trophic_tbl,
-  aes(x = site, y = biomass, fill = trophic_group)
+  aes(x = site_label, y = biomass, fill = trophic_group)
 ) +
   geom_bar(position = "stack", stat = "identity", alpha = 0.9,
            color = "black", linewidth = 0.25) +
@@ -386,7 +425,7 @@ trophic_biomass_plot <- ggplot(
   coord_flip() +
   scale_fill_manual(values = tg_colors) +
   geom_text(data = fish_trophic_tbl,
-            aes(x = site, y = biomass_kgha_avg + (max_biomass * 0.01),
+            aes(x = site_label, y = biomass_kgha_avg + (max_biomass * 0.01),
                 label = paste0(round(biomass_kgha_avg, 0))),
             size = 3, hjust = 0, vjust = 0.5) +
   scale_y_continuous(
@@ -432,7 +471,7 @@ if (length(community_levels) > 1 &&
 }
 
 # Save the plot
-ggsave("plots/fishTrophicBiomassPlot.svg",
+ggsave("../plots/fishTrophicBiomassPlot.svg",
        plot = trophic_biomass_plot,
        width = 9, height = 10)
 
@@ -508,7 +547,7 @@ family_labels <- c(
 #### Reshape data by fish family ####
 fish_family_tbl <- fish_tbl %>%
   select(
-    community, site, latitude, longitude,
+    community, site_label, latitude, longitude,
     biomass_kgha_avg,
     starts_with("biomass_kgha_fish_family_avg_")
   ) %>%
@@ -522,13 +561,13 @@ fish_family_tbl <- fish_tbl %>%
     biomass = ifelse(is.na(biomass), 0, biomass),
     family = if_else(family %in% target_families, family, "other")
   ) %>%
-  group_by(community, site, latitude, longitude,
+  group_by(community, site_label, latitude, longitude,
            biomass_kgha_avg, family) %>%
   summarise(biomass = sum(biomass), .groups = "drop") %>%
   mutate(
     family = recode(family, !!!family_labels),
     community = factor(community, levels = community_levels),
-    site = factor(site, levels = rev(site_levels))
+    site_label = factor(site_label, levels = rev(site_levels))
   ) %>%
   mutate(
     family = factor(family),
@@ -565,7 +604,7 @@ family_colors <- setNames(c(main_cols, "grey40"), family_levels_vec)
 #### Create the plot ####
 family_biomass_plot <- ggplot(
   data = fish_family_tbl,
-  aes(x = site, y = biomass, fill = family)
+  aes(x = site_label, y = biomass, fill = family)
 ) +
   geom_bar(position = "stack", stat = "identity", alpha = 0.9,
            color = "black", linewidth = 0.25) +
@@ -578,7 +617,7 @@ family_biomass_plot <- ggplot(
   coord_flip() +
   scale_fill_manual(values = family_colors) +
   geom_text(
-    aes(x = site, y = biomass_kgha_avg + (max_biomass_fam * 0.01),
+    aes(x = site_label, y = biomass_kgha_avg + (max_biomass_fam * 0.01),
         label = round(biomass_kgha_avg, 0)),
     size = 3, hjust = 0, vjust = 0.5
   ) +
@@ -625,7 +664,7 @@ if (length(community_levels) > 1 &&
 }
 
 # Save the plot
-ggsave("plots/fishFamilyBiomassPlot.svg",
+ggsave("../plots/fishFamilyBiomassPlot.svg",
        plot = family_biomass_plot,
        width = 9, height = 10)
 

@@ -1,0 +1,12 @@
+---
+title: "Index"
+format:
+  html:
+    embed-resources: true
+editor: visual
+---
+
+**Fish Biomass Report Card from MERMAID Data**
+
+-   [Fish biomass report](fish_biomass_report.html) (rendered html)
+-   [Repository](https://github.com/data-mermaid/analysis-fish-biomass-report)
